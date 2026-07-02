@@ -42,7 +42,11 @@ jobs:
         run: |
           . $IDF_PATH/export.sh
           idf.py create-project-from-example "espressif/esp_hosted==${{ env.ESP_HOSTED_VERSION }}:slave"
-
+          
+      - name: Enable GPIO expander RPCs
+        working-directory: slave
+        run: echo "CONFIG_ESP_HOSTED_ENABLE_GPIO_EXPANDER=y" >> sdkconfig.defaults
+        
       - name: Build firmware
         working-directory: slave
         run: |
