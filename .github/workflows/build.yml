@@ -107,74 +107,71 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: release-publish-${{ matrix.target }}-${{ matrix.gpio_support && 'gpio-support' || 'standard' }}
+      group: release-publish-manifest
       cancel-in-progress: false
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - esp32
-          - esp32c5
-          - esp32c6
-          - esp32c61
-        gpio_support:
-          - false
-          - true
 
     steps:
-      - name: Generate manifest
+      - name: Generate manifests
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TARGET="${{ matrix.target }}"
           REPO="${{ github.repository }}"
           REPO_OWNER=$(echo "$REPO" | cut -d'/' -f1)
           REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
           BASE_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}"
+          TARGETS="esp32 esp32c5 esp32c6 esp32c61"
+          VARIANTS="standard gpio_support"
 
-          if [ "${{ matrix.gpio_support }}" = "true" ]; then
-            BIN_FILE="network_adapter_gpio_support_${TARGET}.bin"
-            MANIFEST_FILE="${TARGET}_gpio_support.json"
-          else
-            BIN_FILE="network_adapter_${TARGET}.bin"
-            MANIFEST_FILE="${TARGET}.json"
-          fi
-
-          SHA256_FILE="${BIN_FILE}.sha256"
+          mkdir -p manifests
 
           # Get all release tags
           TAGS=$(gh release list --repo "$REPO" --json tagName -q '.[].tagName')
 
-          # Build manifest using jq
-          echo '{"versions":[]}' > manifest.json
-
-          for TAG in $TAGS; do
-            # Skip manifest tag
-            if [ "$TAG" = "manifest" ]; then
-              continue
-            fi
-
-            VERSION="${TAG#v}"
-
-            # Download SHA256 file using gh CLI (handles auth properly)
-            if gh release download "$TAG" --repo "$REPO" --pattern "$SHA256_FILE" --clobber 2>/dev/null; then
-              SHA256=$(awk '{print $1}' "$SHA256_FILE")
-              rm -f "$SHA256_FILE"
-
-              if [ -n "$SHA256" ] && [ ${#SHA256} -eq 64 ]; then
-                BIN_URL="${BASE_URL}/${TAG}/${BIN_FILE}"
-
-                # Add to manifest using jq
-                jq --arg ver "$VERSION" --arg url "$BIN_URL" --arg sha "$SHA256" \
-                  '.versions += [{"version": $ver, "url": $url, "sha256": $sha}]' \
-                  manifest.json > tmp.json && mv tmp.json manifest.json
+          for TARGET in $TARGETS; do
+            for VARIANT in $VARIANTS; do
+              if [ "$VARIANT" = "gpio_support" ]; then
+                BIN_FILE="network_adapter_gpio_support_${TARGET}.bin"
+                MANIFEST_FILE="manifests/${TARGET}_gpio_support.json"
+              else
+                BIN_FILE="network_adapter_${TARGET}.bin"
+                MANIFEST_FILE="manifests/${TARGET}.json"
               fi
-            fi
-          done
 
-          # Sort versions descending (newest first)
-          jq '.versions |= sort_by(.version | split(".") | map(tonumber)) | .versions |= reverse' \
-            manifest.json > "$MANIFEST_FILE"
+              SHA256_FILE="${BIN_FILE}.sha256"
+
+              # Build manifest using jq
+              echo '{"versions":[]}' > manifest.json
+
+              for TAG in $TAGS; do
+                # Skip manifest tag
+                if [ "$TAG" = "manifest" ]; then
+                  continue
+                fi
+
+                VERSION="${TAG#v}"
+
+                # Download SHA256 file using gh CLI (handles auth properly)
+                if gh release download "$TAG" --repo "$REPO" --pattern "$SHA256_FILE" --clobber 2>/dev/null; then
+                  SHA256=$(awk '{print $1}' "$SHA256_FILE")
+                  rm -f "$SHA256_FILE"
+
+                  if [ -n "$SHA256" ] && [ ${#SHA256} -eq 64 ]; then
+                    BIN_URL="${BASE_URL}/${TAG}/${BIN_FILE}"
+
+                    # Add to manifest using jq
+                    jq --arg ver "$VERSION" --arg url "$BIN_URL" --arg sha "$SHA256" \
+                      '.versions += [{"version": $ver, "url": $url, "sha256": $sha}]' \
+                      manifest.json > tmp.json && mv tmp.json manifest.json
+                  fi
+                fi
+              done
+
+              # Sort versions descending (newest first). The tonumber? fallback
+              # keeps prerelease tags like v3.0.0-rc1 from breaking the job.
+              jq '.versions |= sort_by(.version | split(".") | map(tonumber? // 0)) | .versions |= reverse' \
+                manifest.json > "$MANIFEST_FILE"
+            done
+          done
 
       - name: Upload manifest to release
         env:
@@ -187,7 +184,7 @@ jobs:
           gh release upload manifest \
             --repo "${{ github.repository }}" \
             --clobber \
-            *.json
+            manifests/*.json
 
   deploy-pages:
     needs: manifest
