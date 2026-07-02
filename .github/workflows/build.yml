@@ -10,7 +10,7 @@ on:
       version:
         description: 'ESP-Hosted version to build'
         type: string
-        default: '2.7.0'
+        default: '2.10.0'
       release:
         description: 'Create a release'
         type: boolean
@@ -18,7 +18,7 @@ on:
 
 env:
   ESP_IDF_VERSION: v5.5.4
-  ESP_HOSTED_VERSION: ${{ inputs.version || '2.7.0' }}
+  ESP_HOSTED_VERSION: ${{ inputs.version || '2.10.0' }}
 
 jobs:
   build:
@@ -33,6 +33,9 @@ jobs:
           - esp32c5
           - esp32c6
           - esp32c61
+        gpio_support:
+          - false
+          - true
 
     steps:
       - name: Checkout
@@ -42,11 +45,12 @@ jobs:
         run: |
           . $IDF_PATH/export.sh
           idf.py create-project-from-example "espressif/esp_hosted==${{ env.ESP_HOSTED_VERSION }}:slave"
-          
+
       - name: Enable GPIO expander RPCs
+        if: matrix.gpio_support
         working-directory: slave
         run: echo "CONFIG_ESP_HOSTED_ENABLE_GPIO_EXPANDER=y" >> sdkconfig.defaults
-        
+
       - name: Build firmware
         working-directory: slave
         run: |
@@ -57,13 +61,20 @@ jobs:
       - name: Prepare artifacts
         run: |
           mkdir -p artifacts
-          cp slave/build/network_adapter.bin artifacts/network_adapter_${{ matrix.target }}.bin
-          sha256sum artifacts/network_adapter_${{ matrix.target }}.bin > artifacts/network_adapter_${{ matrix.target }}.bin.sha256
+
+          if [ "${{ matrix.gpio_support }}" = "true" ]; then
+            FIRMWARE_NAME="network_adapter_gpio_support_${{ matrix.target }}.bin"
+          else
+            FIRMWARE_NAME="network_adapter_${{ matrix.target }}.bin"
+          fi
+
+          cp slave/build/network_adapter.bin "artifacts/${FIRMWARE_NAME}"
+          sha256sum "artifacts/${FIRMWARE_NAME}" > "artifacts/${FIRMWARE_NAME}.sha256"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: firmware-${{ matrix.target }}
+          name: firmware-${{ matrix.target }}-${{ matrix.gpio_support && 'gpio-support' || 'standard' }}
           path: artifacts/
 
   release:
@@ -96,15 +107,19 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: release-publish-${{ matrix.target }}
+      group: release-publish-${{ matrix.target }}-${{ matrix.gpio_support && 'gpio-support' || 'standard' }}
       cancel-in-progress: false
     strategy:
+      fail-fast: false
       matrix:
         target:
           - esp32
           - esp32c5
           - esp32c6
           - esp32c61
+        gpio_support:
+          - false
+          - true
 
     steps:
       - name: Generate manifest
@@ -116,6 +131,16 @@ jobs:
           REPO_OWNER=$(echo "$REPO" | cut -d'/' -f1)
           REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
           BASE_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}"
+
+          if [ "${{ matrix.gpio_support }}" = "true" ]; then
+            BIN_FILE="network_adapter_gpio_support_${TARGET}.bin"
+            MANIFEST_FILE="${TARGET}_gpio_support.json"
+          else
+            BIN_FILE="network_adapter_${TARGET}.bin"
+            MANIFEST_FILE="${TARGET}.json"
+          fi
+
+          SHA256_FILE="${BIN_FILE}.sha256"
 
           # Get all release tags
           TAGS=$(gh release list --repo "$REPO" --json tagName -q '.[].tagName')
@@ -130,7 +155,6 @@ jobs:
             fi
 
             VERSION="${TAG#v}"
-            SHA256_FILE="network_adapter_${TARGET}.bin.sha256"
 
             # Download SHA256 file using gh CLI (handles auth properly)
             if gh release download "$TAG" --repo "$REPO" --pattern "$SHA256_FILE" --clobber 2>/dev/null; then
@@ -138,7 +162,7 @@ jobs:
               rm -f "$SHA256_FILE"
 
               if [ -n "$SHA256" ] && [ ${#SHA256} -eq 64 ]; then
-                BIN_URL="${BASE_URL}/${TAG}/network_adapter_${TARGET}.bin"
+                BIN_URL="${BASE_URL}/${TAG}/${BIN_FILE}"
 
                 # Add to manifest using jq
                 jq --arg ver "$VERSION" --arg url "$BIN_URL" --arg sha "$SHA256" \
@@ -150,7 +174,7 @@ jobs:
 
           # Sort versions descending (newest first)
           jq '.versions |= sort_by(.version | split(".") | map(tonumber)) | .versions |= reverse' \
-            manifest.json > ${TARGET}.json
+            manifest.json > "$MANIFEST_FILE"
 
       - name: Upload manifest to release
         env:
@@ -163,7 +187,7 @@ jobs:
           gh release upload manifest \
             --repo "${{ github.repository }}" \
             --clobber \
-            ${{ matrix.target }}.json
+            *.json
 
   deploy-pages:
     needs: manifest
@@ -202,6 +226,10 @@ jobs:
               --repo "${{ github.repository }}" \
               --pattern "*.bin" \
               --dir "public/$TAG" || true
+            gh release download "$TAG" \
+              --repo "${{ github.repository }}" \
+              --pattern "*.bin.sha256" \
+              --dir "public/$TAG" || true
           done
 
       - name: Create index.html
@@ -214,14 +242,15 @@ jobs:
           <!DOCTYPE html>
           <html>
           <head>
-            <title>ESP-Hosted Firmware with GPIO Support</title>
+            <title>ESP-Hosted Firmware</title>
             <style>
-              body { font-family: Arial, sans-serif; margin: 40px; max-width: 900px; }
+              body { font-family: Arial, sans-serif; margin: 40px; max-width: 1100px; }
               h1 { color: #333; }
               h2 { color: #555; margin-top: 30px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
               h3 { color: #666; margin-top: 20px; }
-              ul { list-style-type: none; padding: 0; }
-              li { margin: 8px 0; }
+              table { border-collapse: collapse; width: 100%; margin: 12px 0 24px; }
+              th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              th { background: #f6f8fa; }
               a { color: #0366d6; text-decoration: none; }
               a:hover { text-decoration: underline; }
               code { font-family: monospace; font-size: 0.85em; background: #f6f8fa; padding: 2px 6px; border-radius: 3px; }
@@ -230,8 +259,8 @@ jobs:
             </style>
           </head>
           <body>
-            <h1>ESP-Hosted Firmware with GPIO support</h1>
-            <p>Pre-built ESP-Hosted firmware binaries for ESPHome with GPIO support.</p>
+            <h1>ESP-Hosted Firmware</h1>
+            <p>Pre-built ESP-Hosted firmware binaries for ESPHome, with standard and GPIO-expander-enabled variants.</p>
 
             <div class="manifest-section">
               <h3>Manifests (JSON)</h3>
@@ -263,16 +292,37 @@ jobs:
               FIRST=false
             fi
             echo "</h3>" >> public/index.html
-            echo "    <ul>" >> public/index.html
+            echo "    <table>" >> public/index.html
+            echo "      <thead><tr><th>Target</th><th>Variant</th><th>Firmware</th><th>SHA256</th><th>URL</th></tr></thead>" >> public/index.html
+            echo "      <tbody>" >> public/index.html
 
             for file in "$dir"/*.bin; do
               if [ -f "$file" ]; then
                 filename=$(basename "$file")
-                echo "      <li><a href=\"${TAG}/${filename}\">${filename}</a> - <code>${BASE_URL}/${TAG}/${filename}</code></li>" >> public/index.html
+                sha_filename="${filename}.sha256"
+
+                if echo "$filename" | grep -q '^network_adapter_gpio_support_'; then
+                  variant="GPIO support"
+                  target="${filename#network_adapter_gpio_support_}"
+                else
+                  variant="Standard"
+                  target="${filename#network_adapter_}"
+                fi
+
+                target="${target%.bin}"
+
+                if [ -f "$dir/$sha_filename" ]; then
+                  sha_link="<a href=\"${TAG}/${sha_filename}\">${sha_filename}</a>"
+                else
+                  sha_link="-"
+                fi
+
+                echo "      <tr><td>${target}</td><td>${variant}</td><td><a href=\"${TAG}/${filename}\">${filename}</a></td><td>${sha_link}</td><td><code>${BASE_URL}/${TAG}/${filename}</code></td></tr>" >> public/index.html
               fi
             done
 
-            echo "    </ul>" >> public/index.html
+            echo "      </tbody>" >> public/index.html
+            echo "    </table>" >> public/index.html
           done
 
           cat >> public/index.html << 'FOOTER'
