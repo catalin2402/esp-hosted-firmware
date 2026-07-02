@@ -214,7 +214,7 @@ jobs:
           <!DOCTYPE html>
           <html>
           <head>
-            <title>ESP-Hosted Firmware</title>
+            <title>ESP-Hosted Firmware with GPIO Support</title>
             <style>
               body { font-family: Arial, sans-serif; margin: 40px; max-width: 900px; }
               h1 { color: #333; }
@@ -230,8 +230,8 @@ jobs:
             </style>
           </head>
           <body>
-            <h1>ESP-Hosted Firmware</h1>
-            <p>Pre-built ESP-Hosted firmware binaries for ESPHome.</p>
+            <h1>ESP-Hosted Firmware with GPIO support</h1>
+            <p>Pre-built ESP-Hosted firmware binaries for ESPHome with GPIO support.</p>
 
             <div class="manifest-section">
               <h3>Manifests (JSON)</h3>
